@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable, Optional
 
 from .db import Database
@@ -14,6 +15,7 @@ MAX_LOGIN_ATTEMPTS = 3
 LOW_STOCK_THRESHOLD = 3
 VALID_ORDER_STATUSES = {"Pending", "In Progress", "Delivered", "Cancelled"}
 ROLE_TABLES = {"customer": "customer", "admin": "admin", "supplier": "supplier"}
+ORDER_STATUS_LOOKUP = {status.lower(): status for status in VALID_ORDER_STATUSES}
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,9 @@ class AuthService:
         table = ROLE_TABLES.get(role)
         if table is None:
             raise ValidationError(f"Unsupported role: {role}")
-        if not username.strip() or not password:
+
+        username = username.strip()
+        if not username or not password:
             return AuthResult(False, "Username and password are required", role, username)
 
         with self.db.connect() as connection:
@@ -71,7 +75,7 @@ class AuthService:
                 FROM {table}
                 WHERE username = ?
                 """,
-                (username.strip(),),
+                (username,),
             )
             if row is None:
                 return AuthResult(False, "Username not found", role, username)
@@ -84,7 +88,7 @@ class AuthService:
                 self.db.execute(
                     connection,
                     f"UPDATE {table} SET loginAttempts = 0 WHERE username = ?",
-                    (username.strip(),),
+                    (username,),
                 )
                 return AuthResult(True, "Login successful", role, username)
 
@@ -93,16 +97,20 @@ class AuthService:
             self.db.execute(
                 connection,
                 f"UPDATE {table} SET loginAttempts = ?, isLocked = ? WHERE username = ?",
-                (attempts, int(should_lock), username.strip()),
+                (attempts, int(should_lock), username),
             )
             if should_lock:
                 return AuthResult(False, "Maximum attempts reached; account locked", role, username)
             return AuthResult(False, "Wrong password", role, username)
 
     def unlock_account(self, role: str, account_id: int) -> None:
-        table = ROLE_TABLES.get(role.strip().lower())
+        role = role.strip().lower()
+        table = ROLE_TABLES.get(role)
         if table is None:
             raise ValidationError(f"Unsupported role: {role}")
+        if account_id <= 0:
+            raise ValidationError("Account ID must be a positive integer")
+
         id_column = f"{table}ID"
         with self.db.connect() as connection:
             updated = self.db.execute(
@@ -126,7 +134,11 @@ class CatalogService:
             )
 
     def search_products(self, term: str) -> Iterable[Any]:
-        search = f"%{term.strip()}%"
+        term = term.strip()
+        if not term:
+            raise ValidationError("Search term is required")
+
+        search = f"%{term}%"
         with self.db.connect() as connection:
             return self.db.rows(
                 connection,
@@ -184,8 +196,12 @@ class CartService:
             return int(customer_id)
 
     def add_to_cart(self, customer_id: int, product_id: int, quantity: int) -> None:
+        self._validate_id("Customer ID", customer_id)
+        self._validate_id("Product ID", product_id)
         self._validate_quantity(quantity)
+
         with self.db.connect() as connection:
+            self._ensure_customer_exists(connection, customer_id)
             product = self.db.row(
                 connection,
                 "SELECT quantityAvailable FROM product WHERE productID = ?",
@@ -218,6 +234,9 @@ class CartService:
                 )
 
     def remove_from_cart(self, customer_id: int, product_id: int) -> None:
+        self._validate_id("Customer ID", customer_id)
+        self._validate_id("Product ID", product_id)
+
         with self.db.connect() as connection:
             deleted = self.db.execute(
                 connection,
@@ -228,7 +247,10 @@ class CartService:
                 raise NotFoundError("Product not found in cart")
 
     def view_cart(self, customer_id: int) -> tuple[CartLine, ...]:
+        self._validate_id("Customer ID", customer_id)
+
         with self.db.connect() as connection:
+            self._ensure_customer_exists(connection, customer_id)
             rows = self.db.rows(
                 connection,
                 """
@@ -243,7 +265,10 @@ class CartService:
             return tuple(CartLine(int(row[0]), row[1], float(row[2]), int(row[3])) for row in rows)
 
     def checkout(self, customer_id: int) -> CheckoutResult:
+        self._validate_id("Customer ID", customer_id)
+
         with self.db.connect() as connection:
+            self._ensure_customer_exists(connection, customer_id)
             rows = self.db.rows(
                 connection,
                 """
@@ -265,7 +290,7 @@ class CartService:
                     raise ValidationError(f"Insufficient stock for product {product_id}")
                 items.append(CartLine(int(product_id), name, float(price), int(quantity)))
 
-            amount = sum(item.total for item in items)
+            amount = self._calculate_total(items)
             order_number = self._next_order_number(connection)
             self.db.execute(
                 connection,
@@ -273,7 +298,7 @@ class CartService:
                 INSERT INTO orders (orderNumber, customerID, orderDate, amount, orderStatus)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (order_number, customer_id, date.today().isoformat(), amount, "Pending"),
+                (order_number, customer_id, date.today().isoformat(), float(amount), "Pending"),
             )
             for item in items:
                 self.db.execute(
@@ -306,7 +331,7 @@ class CartService:
                 if updated == 0:
                     raise ValidationError(f"Insufficient stock for product {item.product_id}")
             self.db.execute(connection, "DELETE FROM cart WHERE customerID = ?", (customer_id,))
-            return CheckoutResult(order_number, amount, tuple(items))
+            return CheckoutResult(order_number, float(amount), tuple(items))
 
     def _next_order_number(self, connection: Any) -> int:
         current = self.db.scalar(connection, "SELECT COALESCE(MAX(orderNumber), 1000) FROM orders")
@@ -315,6 +340,26 @@ class CartService:
     def _validate_quantity(self, quantity: int) -> None:
         if quantity <= 0:
             raise ValidationError("Quantity must be greater than zero")
+
+    def _validate_id(self, label: str, value: int) -> None:
+        if value <= 0:
+            raise ValidationError(f"{label} must be a positive integer")
+
+    def _ensure_customer_exists(self, connection: Any, customer_id: int) -> None:
+        exists = self.db.scalar(
+            connection,
+            "SELECT 1 FROM customer WHERE customerID = ?",
+            (customer_id,),
+        )
+        if exists is None:
+            raise NotFoundError("Customer not found")
+
+    def _calculate_total(self, items: Iterable[CartLine]) -> Decimal:
+        total = sum(
+            (Decimal(str(item.unit_price)) * Decimal(item.quantity) for item in items),
+            Decimal("0"),
+        )
+        return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class AdminService:
@@ -333,8 +378,8 @@ class AdminService:
             )
 
     def update_order_status(self, order_number: int, status: str) -> None:
-        status = status.strip()
-        if status not in VALID_ORDER_STATUSES:
+        normalized_status = ORDER_STATUS_LOOKUP.get(status.strip().lower())
+        if normalized_status is None:
             raise ValidationError(
                 f"Order status must be one of: {', '.join(sorted(VALID_ORDER_STATUSES))}"
             )
@@ -342,7 +387,7 @@ class AdminService:
             updated = self.db.execute(
                 connection,
                 "UPDATE orders SET orderStatus = ? WHERE orderNumber = ?",
-                (status, order_number),
+                (normalized_status, order_number),
             ).rowcount
             if updated == 0:
                 raise NotFoundError("Order not found")

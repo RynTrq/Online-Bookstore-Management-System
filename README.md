@@ -1,92 +1,156 @@
 # Shoponize Online Bookstore Management System
 
-Shoponize is a command-line bookstore management system for customers and administrators. The original repository was a single MySQL script plus one monolithic Python file; it has been upgraded into a small, testable Python application with a service layer, configurable database access, local SQLite support, MySQL support, automated tests, and production-grade setup documentation.
+A production-minded command-line bookstore system with a clean service layer, relational schema integrity, and automated tests.
 
-## What The App Does
+This repository now supports:
+- SQLite for zero-setup local development and tests.
+- MySQL for production-like relational deployment.
+- Stronger data integrity and schema constraints.
+- Safer business logic for auth, cart, and checkout workflows.
+- Test coverage across critical and failure-path flows.
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Features](#features)
+3. [Architecture](#architecture)
+4. [Repository Layout](#repository-layout)
+5. [Relational Schema](#relational-schema)
+6. [Setup](#setup)
+7. [Configuration](#configuration)
+8. [Usage](#usage)
+9. [Testing and Validation](#testing-and-validation)
+10. [Troubleshooting](#troubleshooting)
+11. [Implementation Notes](#implementation-notes)
+12. [Changelog (Overhaul)](#changelog-overhaul)
+13. [Residual Risks and Follow-ups](#residual-risks-and-follow-ups)
+
+## Overview
+
+Shoponize models a small online bookstore with customers, admins, suppliers, product catalogs, carts, and orders.
+
+The codebase is layered:
+- CLI layer handles interaction.
+- Service layer holds business rules.
+- Database gateway abstracts backend differences.
+- Schema modules define relational storage and seed data.
+
+## Features
 
 | Area | Capabilities |
 | --- | --- |
-| Customer authentication | Login, failed-attempt tracking, account lockout, legacy plaintext password compatibility, hashed password verification support |
-| Catalog browsing | Search products by name or description, browse categories, inspect product details |
-| Cart | Add items, accumulate quantities safely, prevent overselling, remove items, view totals |
-| Checkout | Create orders, write order line items, decrement inventory, mark low stock, clear cart atomically |
-| Administration | View orders, update order status, delete orders, inspect low stock, update product prices, unlock customer accounts |
-| Database | SQLite for zero-friction local use and tests, MySQL for production-like deployments |
-
-## Repository Layout
-
-```text
-.
-├── connect.py                  # Backwards-compatible launcher
-├── Shoponize.sql               # MySQL schema and seed data
-├── README.md                   # Project guide
-├── requirements.txt            # Runtime dependency for MySQL mode
-├── requirements-dev.txt        # Test/development dependencies
-├── shoponize/
-│   ├── cli.py                  # Interactive terminal UI
-│   ├── config.py               # Environment-driven configuration
-│   ├── db.py                   # SQLite/MySQL DB-API gateway
-│   ├── schema.py               # SQLite schema and seed data
-│   ├── security.py             # Password hashing and verification
-│   └── services.py             # Auth, catalog, cart, checkout, admin logic
-└── tests/
-    └── test_services.py        # Unit tests for critical business flows
-```
+| Authentication | Login by role, failed-attempt tracking, account lockout, account unlock, legacy plaintext and hashed password verification |
+| Catalog | Category browsing, product search, detailed product view |
+| Cart | Add/update item quantities, stock guardrails, item removal, cart inspection |
+| Checkout | Atomic order creation, order line insertion, inventory decrement, low-stock flag update, cart clearing |
+| Admin | View/update/delete orders, low-stock visibility, product price updates, customer unlock |
+| Data layer | SQLite local mode and MySQL mode with equivalent relational structures |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    CLI["shoponize.cli"] --> Services["Business services"]
-    Services --> DB["shoponize.db Database gateway"]
-    DB --> SQLite["SQLite local database"]
-    DB --> MySQL["MySQL shoponize database"]
-    Services --> Security["Password verification"]
+    CLI[shoponize.cli] --> Services[shoponize.services]
+    Services --> DB[shoponize.db Database gateway]
+    Services --> Security[shoponize.security]
+    DB --> SQLite[SQLite local database]
+    DB --> MySQL[MySQL database]
+    SQLite --> Schema[shoponize.schema]
 ```
 
-The CLI handles only input/output. Business rules live in `shoponize/services.py`, so checkout, auth, and admin behavior can be tested without driving terminal prompts. Database access is centralized in `shoponize/db.py`, which keeps connection cleanup, transactions, rollback, and placeholder translation out of the business logic.
+### Execution Flow
 
-## Requirements
+1. `connect.py` launches CLI.
+2. `DatabaseConfig.from_env()` resolves backend and connection settings.
+3. SQLite mode auto-initializes schema and seed data.
+4. CLI calls services for all business actions.
+5. Services use one transaction per operation through the DB gateway.
+
+## Repository Layout
+
+```text
+.
+├── connect.py
+├── README.md
+├── Shoponize.sql
+├── requirements.txt
+├── requirements-dev.txt
+├── docs/
+│   └── relational-schema-review.md
+├── shoponize/
+│   ├── __init__.py
+│   ├── cli.py
+│   ├── config.py
+│   ├── db.py
+│   ├── schema.py
+│   ├── security.py
+│   └── services.py
+└── tests/
+    └── test_services.py
+```
+
+## Relational Schema
+
+The original screenshot had naming/attribute and consistency issues. A full correction review and final conceptual model are documented in:
+- `docs/relational-schema-review.md`
+
+Physical schema implementation is now aligned in:
+- `Shoponize.sql` (MySQL)
+- `shoponize/schema.py` (SQLite)
+
+### Core Relations
+
+- `customer` 1:1 `customerProfile`
+- `customer` 1:N `contactNumber_customer`
+- `customer` 1:N `orders`
+- `orders` N:M `product` through `contains`
+- `customer` N:M `product` through `cart`
+- `admin` N:M `productCategory` through `manages`
+- `supplier` N:M `product` through `supplies`
+- role tables (`customer`, `admin`, `supplier`) each support lockout fields
+
+## Setup
+
+## Prerequisites
 
 | Tool | Version |
 | --- | --- |
-| Python | 3.9 or newer |
-| SQLite | Built into Python |
-| MySQL | Optional, only required for `SHOPONIZE_DB_BACKEND=mysql` |
+| Python | 3.9+ |
+| SQLite | Included with Python |
+| MySQL | Optional for MySQL backend |
 
-## Quick Start With SQLite
-
-SQLite is the default backend and needs no external server.
+## Local Setup (SQLite default)
 
 ```bash
+python3 -m pip install -r requirements-dev.txt
 python3 connect.py
 ```
 
-On first run, the app creates `shoponize.db` and seeds sample users/products.
+On first run, SQLite mode creates and seeds `shoponize.db`.
 
-Sample credentials:
+### Demo Credentials
 
 | Role | Username | Password |
 | --- | --- | --- |
-| Customer | `john_doe` | `password123` |
-| Customer | `emily_j` | `securepass` |
-| Admin | `admin1` | `adminpass` |
+| Customer | john_doe | password123 |
+| Customer | emily_j | securepass |
+| Admin | admin1 | adminpass |
 
 ## MySQL Setup
 
-Install the runtime dependency:
+1. Install runtime dependency:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-Create and seed the MySQL database:
+2. Create and seed schema:
 
 ```bash
 mysql -u root -p < Shoponize.sql
 ```
 
-Run the app against MySQL:
+3. Set environment and run app:
 
 ```bash
 export SHOPONIZE_DB_BACKEND=mysql
@@ -102,80 +166,73 @@ python3 connect.py
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SHOPONIZE_DB_BACKEND` | `sqlite` | `sqlite` or `mysql` |
-| `SHOPONIZE_SQLITE_PATH` | `shoponize.db` | SQLite database file path |
+| `SHOPONIZE_DB_BACKEND` | `sqlite` | Backend (`sqlite` or `mysql`) |
+| `SHOPONIZE_SQLITE_PATH` | `shoponize.db` | SQLite DB file path |
 | `SHOPONIZE_DB_HOST` | `127.0.0.1` | MySQL host |
 | `SHOPONIZE_DB_PORT` | `3306` | MySQL port |
 | `SHOPONIZE_DB_USER` | `root` | MySQL user |
 | `SHOPONIZE_DB_PASSWORD` | empty | MySQL password |
 | `SHOPONIZE_DB_NAME` | `shoponize` | MySQL database name |
 
-Credentials are no longer hard-coded in source. Use environment variables or your shell/profile secret manager.
+## Usage
 
-## Common Commands
+Run the app:
 
-| Command | Purpose |
-| --- | --- |
-| `python3 connect.py` | Start the interactive app |
-| `python3 -m unittest discover -s tests -v` | Run the test suite with the standard library |
-| `python3 -m compileall connect.py shoponize tests` | Verify Python files compile |
-| `python3 -m pip install -r requirements-dev.txt` | Install test/dev dependencies |
+```bash
+python3 connect.py
+```
 
-## Test Workflow
+Main menus:
+- Customer mode: search, browse, cart, checkout
+- Admin mode: monitor orders, stock, and pricing
 
-The tests use isolated temporary SQLite databases, so they do not touch your local `shoponize.db` or MySQL data.
+## Testing and Validation
 
-Covered flows:
-
-| Test Area | Verified Behavior |
-| --- | --- |
-| Authentication | Failed attempts increment, success resets attempts, account locks after the configured threshold |
-| Password security | Salted hash verification works while legacy seed passwords remain usable |
-| Cart | Quantity accumulation, stock limits, empty cart handling |
-| Checkout | Order creation, order line creation, stock decrement, cart clearing |
-
-Run:
+### Commands
 
 ```bash
 python3 -m unittest discover -s tests -v
+python3 -m compileall connect.py shoponize tests
 ```
 
-## Implementation Details
+### Latest Verified Results
 
-### Authentication
-
-`AuthService` supports three role tables: `customer`, `admin`, and `supplier`. It locks accounts after three failed login attempts and resets attempts on successful login. The verifier accepts both new `sha256$salt$digest` password strings and legacy plaintext values from the seed database.
-
-### Checkout
-
-Checkout is transactional. If any item is unavailable, the order is rejected and no cart rows, stock values, or order records are partially updated. Successful checkout creates one `orders` row, one `contains` row per product, decrements stock, updates low-stock status, and clears the customer cart.
-
-### Database Compatibility
-
-Application queries use `?` placeholders internally. The database gateway translates placeholders to `%s` for MySQL, allowing the services to stay backend-neutral. SQLite is used for local development and tests because it requires no service setup.
+- Unit tests: 11 tests, all passing.
+- Compile validation: successful listing/compilation of `shoponize` and `tests`.
 
 ## Troubleshooting
 
-| Problem | Fix |
+| Problem | Resolution |
 | --- | --- |
-| `mysql-connector-python is required` | Run `python3 -m pip install -r requirements.txt` |
-| `SHOPONIZE_DB_BACKEND must be either 'sqlite' or 'mysql'` | Correct the environment variable value |
-| MySQL login fails | Check `SHOPONIZE_DB_USER`, `SHOPONIZE_DB_PASSWORD`, host, port, and that `Shoponize.sql` was loaded |
-| App starts with unexpected data | Delete `shoponize.db` for a fresh SQLite seed database |
-| Account is locked | Login as admin and use "Unlock customer account" |
+| Invalid backend value | Ensure `SHOPONIZE_DB_BACKEND` is `sqlite` or `mysql` |
+| MySQL connector error | Install `requirements.txt` |
+| MySQL auth/connection error | Verify host/port/user/password/name and that schema was loaded |
+| Empty or wrong data in SQLite | Remove `shoponize.db` and rerun app |
+| Locked customer account | Login as admin and unlock account |
 
-## Changelog Of This Overhaul
+## Implementation Notes
 
-| Category | Changes |
+- Services are backend-neutral and use `?` placeholders. DB gateway rewrites to `%s` for MySQL.
+- Checkout is transactional and rollback-safe.
+- Status updates are canonicalized and validated against allowed states.
+- Checkout total calculation now uses decimal arithmetic to avoid float drift.
+- Cart operations now validate positive IDs and explicit customer existence.
+- SQLite schema now includes all relationship tables from the corrected relational model.
+
+## Changelog (Overhaul)
+
+| Category | Improvements |
 | --- | --- |
-| Correctness | Fixed broken `orders` table references, invalid delete parameter binding, supplier schema mismatches, missing order creation during checkout, and import-time application startup |
-| Reliability | Added transactions, rollback on failures, deterministic connection cleanup, input validation, and stock checks before writes |
-| Security | Removed hard-coded database password, added environment config, used parameterized SQL throughout, added password hashing support |
-| Maintainability | Split the monolith into CLI, config, database, security, schema, and service modules |
-| Testability | Added isolated unit tests for critical auth/cart/checkout behavior |
-| Developer experience | Added SQLite quick start, requirements files, `.gitignore`, command reference, and troubleshooting guide |
-| Database quality | Reworked MySQL schema with foreign keys, uniqueness, checks, indexes, order line quantities, supplier offers, and safe seed data |
+| Correctness | Added missing schema tables for SQLite parity, stricter schema checks, canonical status updates |
+| Reliability | Improved service-level validation and rollback coverage |
+| Maintainability | Kept business logic concentrated in services with explicit helper methods |
+| Security | Preserved parameterized SQL everywhere, retained lockout logic and constant-time password checks |
+| Data integrity | Added/enforced key constraints and relational coverage across both schema implementations |
+| Testability | Expanded suite from 6 to 11 tests including rollback and schema parity checks |
+| Documentation | Added full relational model review and expanded README with setup/run/test architecture guidance |
 
-## Residual Risks
+## Residual Risks and Follow-ups
 
-This is still a terminal application, not a web service. MySQL execution was made compatible and documented, but the automated validation in this environment used SQLite because no MySQL server or connector was installed initially. Password hashing support is present, but existing seed data remains plaintext for backwards-compatible demo logins; production data should be migrated to hashed values.
+- No end-to-end interactive CLI automation exists yet; tests are service-level.
+- MySQL integration is documented and schema-aligned, but was not executed in this environment due no running MySQL server.
+- Password migration strategy from legacy plaintext seeds to fully hashed-at-rest records can be implemented in a future migration script.

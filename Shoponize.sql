@@ -33,7 +33,7 @@ CREATE TABLE customer (
     name_last VARCHAR(100),
     username VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
-    gender CHAR(1) NOT NULL,
+    gender CHAR(1) NOT NULL CHECK (gender IN ('M', 'F', 'O')),
     loginAttempts INT NOT NULL DEFAULT 0,
     isLocked BOOLEAN NOT NULL DEFAULT FALSE
 );
@@ -81,7 +81,7 @@ CREATE TABLE orders (
     customerID INT NOT NULL,
     orderDate DATE NOT NULL,
     amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
-    orderStatus VARCHAR(50) NOT NULL,
+    orderStatus VARCHAR(50) NOT NULL CHECK (orderStatus IN ('Pending', 'In Progress', 'Delivered', 'Cancelled')),
     FOREIGN KEY (customerID) REFERENCES customer(customerID) ON DELETE CASCADE,
     INDEX idx_orders_customer (customerID),
     INDEX idx_orders_status (orderStatus)
